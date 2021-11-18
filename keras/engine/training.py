@@ -487,6 +487,7 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
               weighted_metrics=None,
               run_eagerly=None,
               steps_per_execution=None,
+              jit_compile=None,
               **kwargs):
     """Configures the model for training.
 
@@ -565,6 +566,14 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
           `Callback.on_batch_begin` and `Callback.on_batch_end` methods
           will only be called every `N` batches
           (i.e. before/after each `tf.function` execution).
+        jit_compile: Option to compile the model's training step to XLA.
+          This option cannot be enabled when run_eagerly=True.
+          [XLA](https://www.tensorflow.org/xla)
+          is an optimizing compiler for machine learning.
+          Note that `jit_compile=True` is experimental and may not necessarily
+          work for all models.
+          Refer [here](https://www.tensorflow.org/xla/known_issues) for more
+          details.
         **kwargs: Arguments supported for backwards compatibility only.
     """
     base_layer.keras_api_gauge.get_cell('compile').set(True)
@@ -597,6 +606,11 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
       self._reset_compile_cache()
       self._is_compiled = True
       self.loss = loss or {}
+      if self._run_eagerly and jit_compile:
+        raise ValueError('Your model training configuration cannot enable '
+                         '`run_eagarly` and `jit_compile` at the same time.')
+      else:
+        self._jit_compile = jit_compile
 
   def _get_optimizer(self, optimizer):
     """Wraps `optimizer` in `LossScaleOptimizer` if necessary."""
@@ -931,6 +945,9 @@ class Model(base_layer.Layer, version_utils.ModelVersionSelector):
           model._train_counter.assign_add(1)  # pylint: disable=protected-access
         return outputs
 
+      if self._jit_compile:
+        run_step = tf.function(
+            run_step, jit_compile=True, experimental_relax_shapes=True)
       data = next(iterator)
       outputs = model.distribute_strategy.run(run_step, args=(data,))
       outputs = reduce_per_replica(
