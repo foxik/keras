@@ -554,6 +554,9 @@ def sync_to_numpy_or_python_type(tensors):
   def _to_single_numpy_or_python_type(t):
     if isinstance(t, tf.Tensor):
       x = t.numpy()
+      # Strings don't have .item().
+      if not hasattr(x, 'item'):
+        return x
       return x.item() if np.ndim(x) == 0 else x
     return t  # Don't turn ragged or sparse tensors to NumPy.
 
