@@ -57,11 +57,14 @@ class _BaseOptimizer(tf.Module):
     self._gradients_clip_option = gradients_clip_option
     self._ema_option = ema_option
 
+    self._create_iteration_variable()
+    self._process_kwargs(kwargs)
+
+  def _create_iteration_variable(self):
+    """Create the iterations counter variable."""
     with tf.init_scope():
       # Lift the variable creation to init scope to avoid environment issue.
       self._iterations = tf.Variable(0, name="iteration", dtype=tf.int64)
-
-    self._process_kwargs(kwargs)
 
   def _process_kwargs(self, kwargs):
     legacy_gradients_clip_kwargs = {"clipnorm", "clipvalue", "global_clipnorm"}
