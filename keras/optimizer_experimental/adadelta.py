@@ -71,11 +71,13 @@ class Adadelta(optimizer.Optimizer):
                epsilon=1e-7,
                gradients_clip_option=None,
                ema_option=None,
+               jit_compile=False,
                name='Adadelta',
                **kwargs):
     super(Adadelta, self).__init__(
         gradients_clip_option=gradients_clip_option,
         ema_option=ema_option,
+        jit_compile=jit_compile,
         name=name,
         **kwargs)
     self._learning_rate = self._build_learning_rate(learning_rate)

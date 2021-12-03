@@ -13,12 +13,14 @@ from keras.optimizer_experimental import adadelta as adadelta_new
 from keras.optimizer_experimental import adagrad as adagrad_new
 from keras.optimizer_experimental import adam as adam_new
 from keras.optimizer_experimental import optimizer_lib
+from keras.optimizer_experimental import rmsprop as rmsprop_new
 from keras.optimizer_experimental import sgd as sgd_new
 from keras.optimizer_v2 import adadelta as adadelta_old
 from keras.optimizer_v2 import adagrad as adagrad_old
 from keras.optimizer_v2 import adam as adam_old
 from keras.optimizer_v2 import gradient_descent as sgd_old
 from keras.optimizer_v2 import learning_rate_schedule
+from keras.optimizer_v2 import rmsprop as rmsprop_old
 from keras.utils import losses_utils
 import numpy as np
 import tensorflow.compat.v2 as tf
@@ -47,6 +49,8 @@ adagrad_new_fn = tf.__internal__.test.combinations.NamedObject(
     "experimentaladagrad", lambda: adagrad_new.Adagrad(0.002))
 adam_new_fn = tf.__internal__.test.combinations.NamedObject(
     "experimentaladam", lambda: adam_new.Adam(0.002))
+rmsprop_new_fn = tf.__internal__.test.combinations.NamedObject(
+    "experimentalrmsprop", lambda: rmsprop_new.RMSprop(0.002))
 sgd_new_fn = tf.__internal__.test.combinations.NamedObject(
     "experimentalsgdaverage",
     lambda: sgd_new.SGD(  # pylint: disable=g-long-lambda
@@ -58,6 +62,7 @@ OPTIMIZER_FN = [
     adadelta_new_fn,
     adagrad_new_fn,
     adam_new_fn,
+    rmsprop_new_fn,
     sgd_new_fn,
 ]
 
@@ -303,6 +308,9 @@ class OptimizerRegressionTest(tf.test.TestCase, parameterized.TestCase):
   def testAdagrad(self):
     self._compare_numerical(adagrad_old.Adagrad(), adagrad_new.Adagrad())
 
+  def testRMSprop(self):
+    self._compare_numerical(rmsprop_new.RMSprop(), rmsprop_old.RMSprop())
+
   @parameterized.product(nesterov=[True, False])
   def testSgd(self, nesterov):
     self._compare_numerical(
@@ -374,6 +382,71 @@ class DistributedTrainingTest(tf.test.TestCase, parameterized.TestCase):
       for _ in range(3):
         train_step(ds)
     self.assertEqual(self.evaluate(optimizer.iterations), 3)
+
+  @ds_combinations.generate(
+      tf.__internal__.test.combinations.combine(strategy=[
+          ds_combinations.mirrored_strategy_with_two_gpus,
+          ds_combinations.tpu_strategy,
+          ds_combinations.multi_worker_mirrored_2x2_gpu,
+          ds_combinations.central_storage_strategy_with_two_gpus,
+      ]))
+  def testJitCompile(self, strategy):
+    # Test the optimizer yields same numerical results when jit_compile is
+    # on and off.
+    with strategy.scope():
+      optimizer_1 = adam_new.Adam(
+          ema_option=optimizer_lib.EMAOption(
+              use_ema=True, ema_overwrite_frequency=1))
+      optimizer_2 = adam_new.Adam(
+          jit_compile=True,
+          ema_option=optimizer_lib.EMAOption(
+              use_ema=True, ema_overwrite_frequency=1))
+      model_1 = keras.Sequential([
+          keras.layers.Input(shape=(2,)),
+          keras.layers.Dense(5),
+          keras.layers.Dense(1)
+      ])
+      model_2 = keras.models.clone_model(model_1)
+      model_2.set_weights(model_1.get_weights())
+
+      def per_worker_dataset_fn():
+
+        def dataset_fn(_):
+          x = np.random.rand(6, 2)
+          y = [1, 1, 1, 0, 0, 0]
+          ds = tf.data.Dataset.from_tensor_slices((x, y))
+          ds = ds.repeat().batch(6)
+          return ds
+
+        return strategy.distribute_datasets_from_function(dataset_fn)
+
+      ds = per_worker_dataset_fn()
+
+      @tf.function
+      def train_step(ds):
+
+        def replica_fn(data):
+          features, labels = data
+          with tf.GradientTape() as tape:
+            output_1 = model_1(features)
+            loss_1 = keras.losses.MeanSquaredError(
+                reduction=losses_utils.ReductionV2.NONE)(labels, output_1)
+          grads_1 = tape.gradient(loss_1, model_1.trainable_variables)
+          optimizer_1.apply_gradients(zip(grads_1, model_1.trainable_variables))
+
+          with tf.GradientTape() as tape:
+            output_2 = model_2(features)
+            loss_2 = keras.losses.MeanSquaredError(
+                reduction=losses_utils.ReductionV2.NONE)(labels, output_2)
+          grads_2 = tape.gradient(loss_2, model_2.trainable_variables)
+          optimizer_2.apply_gradients(zip(grads_2, model_2.trainable_variables))
+
+        strategy.run(replica_fn, args=(next(iter(ds)),))
+
+      for _ in range(3):
+        train_step(ds)
+        self.assertAllClose(model_1.trainable_variables[0][0],
+                            model_2.trainable_variables[0][0])
 
 
 if __name__ == "__main__":
